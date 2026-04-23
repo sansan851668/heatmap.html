@@ -1,0 +1,1676 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>微波加热模式图片处理 (纯网页版)</title>
+  
+  <!-- 引入 React 核心库 -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- 引入 Babel 解析 JSX -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- 引入 Tailwind CSS 进行界面排版 -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- 引入 FontAwesome 免费图标库 -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css" />
+
+  <style>
+    body { margin: 0; padding: 0; font-family: sans-serif; overflow: hidden; }
+  </style>
+</head>
+<body>
+  <!-- React 应用挂载点 -->
+  <div id="root"></div>
+
+  <!-- 核心业务逻辑 -->
+  <script type="text/babel">
+    const { useState, useRef, useEffect } = React;
+
+    // === 图标映射组件 (FontAwesome 替代) ===
+    const Folder = ({ size=24, className="" }) => <i className={`fas fa-folder ${className}`} style={{fontSize: size}}></i>;
+    const Settings = ({ size=24, className="" }) => <i className={`fas fa-cog ${className}`} style={{fontSize: size}}></i>;
+    const ImageIcon = ({ size=24, className="" }) => <i className={`fas fa-image ${className}`} style={{fontSize: size}}></i>;
+    const Ruler = ({ size=24, className="" }) => <i className={`fas fa-ruler-combined ${className}`} style={{fontSize: size}}></i>;
+    const Activity = ({ size=24, className="" }) => <i className={`fas fa-chart-line ${className}`} style={{fontSize: size}}></i>;
+    const Layers = ({ size=24, className="" }) => <i className={`fas fa-layer-group ${className}`} style={{fontSize: size}}></i>;
+    const Sliders = ({ size=24, className="" }) => <i className={`fas fa-sliders-h ${className}`} style={{fontSize: size}}></i>;
+    const Download = ({ size=24, className="" }) => <i className={`fas fa-download ${className}`} style={{fontSize: size}}></i>;
+    const Play = ({ size=24, className="" }) => <i className={`fas fa-play ${className}`} style={{fontSize: size}}></i>;
+    const Save = ({ size=24, className="" }) => <i className={`fas fa-save ${className}`} style={{fontSize: size}}></i>;
+    const ZoomIn = ({ size=24, className="" }) => <i className={`fas fa-search-plus ${className}`} style={{fontSize: size}}></i>;
+    const ZoomOut = ({ size=24, className="" }) => <i className={`fas fa-search-minus ${className}`} style={{fontSize: size}}></i>;
+    const Maximize = ({ size=24, className="" }) => <i className={`fas fa-expand ${className}`} style={{fontSize: size}}></i>;
+    const MousePointer = ({ size=24, className="" }) => <i className={`fas fa-mouse-pointer ${className}`} style={{fontSize: size}}></i>;
+    const ChevronRight = ({ size=24, className="" }) => <i className={`fas fa-chevron-right ${className}`} style={{fontSize: size}}></i>;
+    const ChevronDown = ({ size=24, className="" }) => <i className={`fas fa-chevron-down ${className}`} style={{fontSize: size}}></i>;
+    const CheckCircle = ({ size=24, className="" }) => <i className={`fas fa-check-circle ${className}`} style={{fontSize: size}}></i>;
+    const Flame = ({ size=24, className="" }) => <i className={`fas fa-fire ${className}`} style={{fontSize: size}}></i>;
+    const Snowflake = ({ size=24, className="" }) => <i className={`fas fa-snowflake ${className}`} style={{fontSize: size}}></i>;
+    const Target = ({ size=24, className="" }) => <i className={`fas fa-bullseye ${className}`} style={{fontSize: size}}></i>;
+    const Crosshair = ({ size=24, className="" }) => <i className={`fas fa-crosshairs ${className}`} style={{fontSize: size}}></i>;
+    const Loader = ({ size=24, className="" }) => <i className={`fas fa-spinner fa-spin ${className}`} style={{fontSize: size}}></i>;
+    const Palette = ({ size=24, className="" }) => <i className={`fas fa-palette ${className}`} style={{fontSize: size}}></i>;
+    const CropIcon = ({ size=24, className="" }) => <i className={`fas fa-crop-alt ${className}`} style={{fontSize: size}}></i>;
+    const Scissors = ({ size=24, className="" }) => <i className={`fas fa-cut ${className}`} style={{fontSize: size}}></i>;
+    const Undo2 = ({ size=24, className="" }) => <i className={`fas fa-undo ${className}`} style={{fontSize: size}}></i>;
+    const Focus = ({ size=24, className="" }) => <i className={`fas fa-compress-arrows-alt ${className}`} style={{fontSize: size}}></i>;
+
+    // === Jet 伪彩色查询表 (LUT) ===
+    const jetColorTable = new Uint8ClampedArray(256 * 3);
+    for (let i = 0; i <= 255; i++) {
+      const val = i / 255;
+      jetColorTable[i * 3] = Math.round(255 * Math.min(Math.max(1.5 - Math.abs(1 - 4 * (val - 0.5)), 0), 1));
+      jetColorTable[i * 3 + 1] = Math.round(255 * Math.min(Math.max(1.5 - Math.abs(1 - 4 * (val - 0.25)), 0), 1));
+      jetColorTable[i * 3 + 2] = Math.round(255 * Math.min(Math.max(1.5 - Math.abs(1 - 4 * val), 0), 1));
+    }
+
+    const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+    // === O(N) 高斯平滑近似算法 ===
+    const applyFastBoxBlur = (src, w, h, radius, passes = 2) => {
+      let currentSrc = new Float32Array(src);
+      let temp = new Float32Array(src.length);
+      let dst = new Float32Array(src.length);
+
+      for (let p = 0; p < passes; p++) {
+        for (let y = 0; y < h; y++) {
+          let sum = 0;
+          const offset = y * w;
+          for (let i = -radius; i <= radius; i++) {
+            sum += currentSrc[offset + Math.min(w - 1, Math.max(0, i))];
+          }
+          for (let x = 0; x < w; x++) {
+            temp[offset + x] = sum / (radius * 2 + 1);
+            const next = currentSrc[offset + Math.min(w - 1, x + radius + 1)];
+            const prev = currentSrc[offset + Math.max(0, x - radius)];
+            sum += next - prev;
+          }
+        }
+        for (let x = 0; x < w; x++) {
+          let sum = 0;
+          for (let i = -radius; i <= radius; i++) {
+            sum += temp[Math.min(h - 1, Math.max(0, i)) * w + x];
+          }
+          for (let y = 0; y < h; y++) {
+            dst[y * w + x] = sum / (radius * 2 + 1);
+            const next = temp[Math.min(h - 1, y + radius + 1) * w + x];
+            const prev = temp[Math.max(0, y - radius) * w + x];
+            sum += next - prev;
+          }
+        }
+        currentSrc.set(dst);
+      }
+      return dst;
+    };
+
+    // === 树状菜单组件 ===
+    const TreeItem = ({ activeNode, setActiveNode, id, icon: Icon, label, depth = 0, hasChildren, expanded, onToggle }) => {
+      const SafeIcon = Icon || Folder;
+      return (
+        <div 
+          className={`flex items-center py-1 px-2 cursor-pointer select-none text-sm transition-colors
+            ${activeNode === id ? 'bg-blue-100/60 border-blue-300' : 'hover:bg-gray-100 border-transparent'} border border-y-0 border-r-0 border-l-2`}
+          style={{ paddingLeft: `${depth * 16 + 8}px`, borderLeftColor: activeNode === id ? '#3b82f6' : 'transparent' }}
+          onClick={() => { setActiveNode(id); if (hasChildren && onToggle) onToggle(); }}
+        >
+          {hasChildren ? (
+            <span className="w-4 h-4 mr-1 flex items-center justify-center text-gray-500 hover:text-gray-800" onClick={(e) => { e.stopPropagation(); onToggle && onToggle(); }}>
+              {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            </span>
+          ) : <span className="w-4 mr-1" />}
+          <SafeIcon size={14} className={`mr-2 ${activeNode === id ? 'text-blue-600' : 'text-gray-600'}`} />
+          <span className={`${activeNode === id ? 'text-blue-800 font-medium' : 'text-gray-700'}`}>{label}</span>
+        </div>
+      );
+    };
+
+    function App() {
+      const [importedImageSrc, setImportedImageSrc] = useState(null); 
+      const [originalImageSrc, setOriginalImageSrc] = useState(null); 
+      const [displayImage, setDisplayImage] = useState(null);
+      const [fileName, setFileName] = useState('');
+      const [step, setStep] = useState(0); 
+      const [analysisData, setAnalysisData] = useState(null); 
+      
+      const [activeNode, setActiveNode] = useState('import');
+      const [treeExpanded, setTreeExpanded] = useState({ comp: true, results: true });
+      
+      const [isCropping, setIsCropping] = useState(false);
+      const [cropRect, setCropRect] = useState({ x: 0, y: 0, w: 1, h: 1 }); 
+      const [dragMode, setDragMode] = useState(null); 
+
+      const [enableROI, setEnableROI] = useState(false);
+      const [roiRect, setRoiRect] = useState({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 }); 
+      const [roiDragMode, setRoiDragMode] = useState(null);
+
+      const dragStartRef = useRef({ x: 0, y: 0, startRect: null });
+      const [imgBounds, setImgBounds] = useState(null); 
+
+      const imgContainerRef = useRef(null);
+      const imgRef = useRef(null);
+
+      const [showHotMarker, setShowHotMarker] = useState(true); 
+      const [showColdMarker, setShowColdMarker] = useState(true); 
+      const [showCoords, setShowCoords] = useState(true); 
+      const [showAxes, setShowAxes] = useState(true); 
+      
+      const [showIsolines, setShowIsolines] = useState(false); 
+      const [isolineCount, setIsolineCount] = useState(10); 
+      const [isolineColor, setIsolineColor] = useState('#000000'); 
+      
+      const [exportShowHotMarker, setExportShowHotMarker] = useState(true);
+      const [exportShowColdMarker, setExportShowColdMarker] = useState(true);
+      const [exportShowCoords, setExportShowCoords] = useState(true);
+      const [exportShowAxes, setExportShowAxes] = useState(true);
+      const [exportShowROI, setExportShowROI] = useState(true);
+      const [exportFormat, setExportFormat] = useState('png'); 
+      
+      const [contrast, setContrast] = useState(0);
+      const [colorLimitMin, setColorLimitMin] = useState(0); 
+      const [colorLimitMax, setColorLimitMax] = useState(255); 
+
+      const [maxX, setMaxX] = useState(100);
+      const [maxY, setMaxY] = useState(100);
+      const [unit, setUnit] = useState('mm');
+      const [originMode, setOriginMode] = useState('center'); 
+
+      const [axisFontFamilyEN, setAxisFontFamilyEN] = useState("'Times New Roman', Times, serif");
+      const [axisFontFamilyZH, setAxisFontFamilyZH] = useState("'SimSun', serif");
+      const [axisFontScale, setAxisFontScale] = useState(1.0);
+      const [axisLineStyle, setAxisLineStyle] = useState('dashed');
+      const [axisLineWidth, setAxisLineWidth] = useState(1.0);
+      const [axisColor, setAxisColor] = useState('#ffffff');
+
+      const [markerFontFamilyEN, setMarkerFontFamilyEN] = useState("'Times New Roman', Times, serif");
+      const [markerFontFamilyZH, setMarkerFontFamilyZH] = useState("'SimSun', serif");
+      const [markerFontScale, setMarkerFontScale] = useState(1.0);
+      const [markerTextColor, setMarkerTextColor] = useState('#ffffff');
+      
+      const [markerIconStyle, setMarkerIconStyle] = useState('crosshair-circle');
+      const [markerIconScale, setMarkerIconScale] = useState(1.0); 
+      const [coldMarkerText, setColdMarkerText] = useState('MIN');
+      const [hotMarkerText, setHotMarkerText] = useState('MAX');
+
+      const [coldLabelOffset, setColdLabelOffset] = useState({ x: 0, y: 0 });
+      const [hotLabelOffset, setHotLabelOffset] = useState({ x: 0, y: 0 });
+      const [draggingLabel, setDraggingLabel] = useState(null); 
+      const labelDragStartRef = useRef({ startScreenX: 0, startScreenY: 0, startOffset: {x: 0, y: 0} });
+
+      const fileInputRef = useRef(null);
+      const rawHeatDataRef = useRef(null);
+
+      const updateImgBounds = () => {
+        if (!imgRef.current || !imgContainerRef.current) return;
+        const cRect = imgContainerRef.current.getBoundingClientRect();
+        const img = imgRef.current;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        if (!nw || !nh) return;
+
+        const imgRect = img.getBoundingClientRect();
+        const imgRatio = nw / nh;
+        const elRatio = imgRect.width / imgRect.height;
+        
+        let renderedW, renderedH, offsetX = 0, offsetY = 0;
+        if (imgRatio > elRatio) {
+          renderedW = imgRect.width;
+          renderedH = imgRect.width / imgRatio;
+          offsetY = (imgRect.height - renderedH) / 2;
+        } else {
+          renderedH = imgRect.height;
+          renderedW = imgRect.height * imgRatio;
+          offsetX = (imgRect.width - renderedW) / 2;
+        }
+
+        setImgBounds({
+          left: imgRect.left + offsetX - cRect.left,
+          top: imgRect.top + offsetY - cRect.top,
+          width: renderedW,
+          height: renderedH
+        });
+      };
+
+      useEffect(() => {
+        if ((activeNode === 'crop' && isCropping) || (activeNode === 'adjust' && (enableROI || showHotMarker || showColdMarker))) {
+          updateImgBounds();
+          window.addEventListener('resize', updateImgBounds);
+          return () => window.removeEventListener('resize', updateImgBounds);
+        } else if (activeNode !== 'crop') {
+          setIsCropping(false);
+          setCropRect({ x: 0, y: 0, w: 1, h: 1 });
+        }
+      }, [activeNode, isCropping, enableROI, displayImage, showHotMarker, showColdMarker]);
+
+      useEffect(() => {
+        const currentDragMode = dragMode || roiDragMode;
+        if (!currentDragMode || !imgBounds || !imgContainerRef.current) return;
+
+        const handleGlobalMouseMove = (e) => {
+          const cRect = imgContainerRef.current.getBoundingClientRect();
+          const actualLeft = cRect.left + imgBounds.left;
+          const actualTop = cRect.top + imgBounds.top;
+          
+          let relX = (e.clientX - actualLeft) / imgBounds.width;
+          let relY = (e.clientY - actualTop) / imgBounds.height;
+          
+          const { startRel, startRect } = dragStartRef.current;
+          const deltaX = relX - startRel.x;
+          const deltaY = relY - startRel.y;
+
+          let newRect = { ...startRect };
+          const MIN_SIZE = 0.05; 
+
+          if (currentDragMode === 'move') {
+            newRect.x = Math.max(0, Math.min(1 - newRect.w, startRect.x + deltaX));
+            newRect.y = Math.max(0, Math.min(1 - newRect.h, startRect.y + deltaY));
+          } else {
+            if (currentDragMode.includes('w')) {
+              newRect.x = Math.min(startRect.x + deltaX, startRect.x + startRect.w - MIN_SIZE);
+              newRect.x = Math.max(0, newRect.x);
+              newRect.w = startRect.x + startRect.w - newRect.x;
+            }
+            if (currentDragMode.includes('e')) {
+              newRect.w = Math.max(MIN_SIZE, Math.min(1 - startRect.x, startRect.w + deltaX));
+            }
+            if (currentDragMode.includes('n')) {
+              newRect.y = Math.min(startRect.y + deltaY, startRect.y + startRect.h - MIN_SIZE);
+              newRect.y = Math.max(0, newRect.y);
+              newRect.h = startRect.y + startRect.h - newRect.y;
+            }
+            if (currentDragMode.includes('s')) {
+              newRect.h = Math.max(MIN_SIZE, Math.min(1 - startRect.y, startRect.h + deltaY));
+            }
+          }
+          
+          if (dragMode) setCropRect(newRect);
+          if (roiDragMode) setRoiRect(newRect);
+        };
+
+        const handleGlobalMouseUp = () => {
+          setDragMode(null);
+          setRoiDragMode(null);
+        };
+
+        window.addEventListener('mousemove', handleGlobalMouseMove);
+        window.addEventListener('mouseup', handleGlobalMouseUp);
+        return () => {
+          window.removeEventListener('mousemove', handleGlobalMouseMove);
+          window.removeEventListener('mouseup', handleGlobalMouseUp);
+        };
+      }, [dragMode, roiDragMode, imgBounds]);
+
+      useEffect(() => {
+        if (!draggingLabel || !imgBounds) return;
+        const handleMouseMove = (e) => {
+          const start = labelDragStartRef.current;
+          const deltaScreenX = e.clientX - start.startScreenX;
+          const deltaScreenY = e.clientY - start.startScreenY;
+          
+          const scaleX = rawHeatDataRef.current.width / imgBounds.width;
+          const scaleY = rawHeatDataRef.current.height / imgBounds.height;
+          
+          const dx = deltaScreenX * scaleX;
+          const dy = deltaScreenY * scaleY;
+          
+          if (draggingLabel === 'hot') {
+            setHotLabelOffset({ x: start.startOffset.x + dx, y: start.startOffset.y + dy });
+          } else {
+            setColdLabelOffset({ x: start.startOffset.x + dx, y: start.startOffset.y + dy });
+          }
+        };
+        const handleMouseUp = () => setDraggingLabel(null);
+        
+        window.addEventListener('mousemove', handleMouseMove);
+        window.addEventListener('mouseup', handleMouseUp);
+        return () => {
+          window.removeEventListener('mousemove', handleMouseMove);
+          window.removeEventListener('mouseup', handleMouseUp);
+        };
+      }, [draggingLabel, imgBounds]);
+
+      useEffect(() => {
+        const isCroppingActive = activeNode === 'crop' && isCropping;
+        const isRoiActive = activeNode === 'adjust' && enableROI;
+        if ((!isCroppingActive && !isRoiActive) || !imgRef.current) return;
+        
+        const handleKeyDown = (e) => {
+          if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+          e.preventDefault(); 
+          
+          const nw = imgRef.current.naturalWidth;
+          const nh = imgRef.current.naturalHeight;
+          const stepX = 1 / nw; 
+          const stepY = 1 / nh;
+          
+          const setRect = isCroppingActive ? setCropRect : setRoiRect;
+
+          setRect(prev => {
+            let { x, y, w, h } = prev;
+            if (e.shiftKey) { 
+              if (e.key === 'ArrowRight') w += stepX;
+              if (e.key === 'ArrowLeft') w -= stepX;
+              if (e.key === 'ArrowDown') h += stepY;
+              if (e.key === 'ArrowUp') h -= stepY;
+            } else { 
+              if (e.key === 'ArrowRight') x += stepX;
+              if (e.key === 'ArrowLeft') x -= stepX;
+              if (e.key === 'ArrowDown') y += stepY;
+              if (e.key === 'ArrowUp') y -= stepY;
+            }
+            
+            w = Math.max(stepX * 5, w); 
+            h = Math.max(stepY * 5, h);
+            x = Math.max(0, Math.min(x, 1 - w));
+            y = Math.max(0, Math.min(y, 1 - h));
+            w = Math.min(w, 1 - x);
+            h = Math.min(h, 1 - y);
+            
+            return { x, y, w, h };
+          });
+        };
+        window.addEventListener('keydown', handleKeyDown);
+        return () => window.removeEventListener('keydown', handleKeyDown);
+      }, [activeNode, isCropping, enableROI]);
+
+      const startDrag = (mode, e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setDragMode(mode);
+        initDragStart(cropRect, e);
+      };
+
+      const startRoiDrag = (mode, e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        setRoiDragMode(mode);
+        initDragStart(roiRect, e);
+      };
+
+      const initDragStart = (targetRect, e) => {
+        if (!imgBounds || !imgContainerRef.current) return;
+        const cRect = imgContainerRef.current.getBoundingClientRect();
+        const actualLeft = cRect.left + imgBounds.left;
+        const actualTop = cRect.top + imgBounds.top;
+        
+        const relX = (e.clientX - actualLeft) / imgBounds.width;
+        const relY = (e.clientY - actualTop) / imgBounds.height;
+        
+        dragStartRef.current = { 
+           startRel: { x: relX, y: relY }, 
+           startRect: { ...targetRect } 
+        };
+      };
+
+      const applyCrop = () => {
+        if (cropRect.w === 0 || cropRect.h === 0) {
+            alert("请先框选有效的区域"); return;
+        }
+        const img = imgRef.current;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        
+        const cx = cropRect.x * nw;
+        const cy = cropRect.y * nh;
+        const cw = cropRect.w * nw;
+        const ch = cropRect.h * nh;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = cw;
+        canvas.height = ch;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, cx, cy, cw, ch, 0, 0, cw, ch);
+        
+        const croppedDataUrl = canvas.toDataURL('image/png');
+        
+        setOriginalImageSrc(croppedDataUrl);
+        setDisplayImage(croppedDataUrl);
+        setIsCropping(false);
+        setCropRect({ x: 0, y: 0, w: 1, h: 1 });
+        setStep(1); 
+        setAnalysisData(null);
+        rawHeatDataRef.current = null;
+        
+        setColdLabelOffset({x:0, y:0});
+        setHotLabelOffset({x:0, y:0});
+      };
+
+      const resetImage = () => {
+        if (!importedImageSrc) return;
+        setOriginalImageSrc(importedImageSrc);
+        setDisplayImage(importedImageSrc);
+        setIsCropping(false);
+        setCropRect({ x: 0, y: 0, w: 1, h: 1 });
+        setStep(1);
+        setAnalysisData(null);
+        rawHeatDataRef.current = null;
+      };
+
+      useEffect(() => {
+        if (step < 3 || !rawHeatDataRef.current) return;
+        const { smoothedHeat, width, height } = rawHeatDataRef.current;
+
+        let searchRect = { x: 0, y: 0, w: width, h: height };
+        if (enableROI) {
+          searchRect = {
+            x: Math.floor(roiRect.x * width),
+            y: Math.floor(roiRect.y * height),
+            w: Math.max(1, Math.floor(roiRect.w * width)),
+            h: Math.max(1, Math.floor(roiRect.h * height))
+          };
+          searchRect.x = Math.max(0, Math.min(width - 1, searchRect.x));
+          searchRect.y = Math.max(0, Math.min(height - 1, searchRect.y));
+          searchRect.w = Math.min(width - searchRect.x, searchRect.w);
+          searchRect.h = Math.min(height - searchRect.y, searchRect.h);
+        }
+
+        let minVal = 255;
+        let maxVal = 0;
+        let minPos = { x: searchRect.x, y: searchRect.y };
+        let maxPos = { x: searchRect.x, y: searchRect.y };
+
+        for (let y = searchRect.y; y < searchRect.y + searchRect.h; y++) {
+          for (let x = searchRect.x; x < searchRect.x + searchRect.w; x++) {
+            const idx = y * width + x;
+            const val = smoothedHeat[idx];
+            if (val < minVal) {
+              minVal = val;
+              minPos = { x, y };
+            }
+            if (val > maxVal) {
+              maxVal = val;
+              maxPos = { x, y };
+            }
+          }
+        }
+        setAnalysisData({ cold: minPos, hot: maxPos });
+      }, [enableROI, roiRect, step]);
+
+      const getPhysCoord = (pixX, pixY) => {
+        if (!rawHeatDataRef.current) return {x: '0.00', y: '0.00'};
+        const w = rawHeatDataRef.current.width;
+        const h = rawHeatDataRef.current.height;
+        
+        const x_ratio = pixX / w;
+        const y_ratio = pixY / h;
+        let x, y;
+        
+        switch(originMode) {
+          case 'bottom-left': x = x_ratio * maxX; y = (1 - y_ratio) * maxY; break;
+          case 'top-left': x = x_ratio * maxX; y = -y_ratio * maxY; break;
+          case 'bottom-right': x = -(1 - x_ratio) * maxX; y = (1 - y_ratio) * maxY; break;
+          case 'top-right': x = -(1 - x_ratio) * maxX; y = -y_ratio * maxY; break;
+          case 'center': default: x = (x_ratio * 2 - 1) * maxX; y = (1 - y_ratio * 2) * maxY; break;
+        }
+        
+        return { x: x.toFixed(2), y: y.toFixed(2) };
+      };
+
+      const processImageData = (imgSrc) => {
+        return new Promise((resolve) => {
+          const img = new Image();
+          img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = img.width;
+            canvas.height = img.height;
+            ctx.drawImage(img, 0, 0);
+
+            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            const data = imageData.data;
+
+            const grayData = new Uint8ClampedArray(data.length);
+            const heatValues = new Uint8ClampedArray(data.length / 4);
+            const alphaValues = new Uint8ClampedArray(data.length / 4);
+
+            let globalMinVal = 255;
+            let globalMaxVal = 0;
+
+            for (let i = 0; i < data.length; i += 4) {
+              const rawAvg = Math.round(data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114);
+              const heatValue = 255 - rawAvg; 
+              
+              heatValues[i / 4] = heatValue; 
+              alphaValues[i / 4] = data[i + 3];
+              
+              if (heatValue < globalMinVal) globalMinVal = heatValue;
+              if (heatValue > globalMaxVal) globalMaxVal = heatValue;
+              
+              grayData[i] = rawAvg;
+              grayData[i + 1] = rawAvg;
+              grayData[i + 2] = rawAvg;
+              grayData[i + 3] = data[i + 3];
+            }
+
+            const smoothedHeatValues = applyFastBoxBlur(heatValues, canvas.width, canvas.height, 4, 2);
+
+            rawHeatDataRef.current = {
+              heat: heatValues,
+              smoothedHeat: smoothedHeatValues, 
+              alpha: alphaValues,
+              width: canvas.width,
+              height: canvas.height,
+              min: globalMinVal,
+              max: globalMaxVal
+            };
+
+            const grayImgData = new ImageData(grayData, canvas.width, canvas.height);
+            ctx.putImageData(grayImgData, 0, 0);
+            const grayUrl = canvas.toDataURL('image/png');
+
+            resolve({ grayUrl, minVal: globalMinVal, maxVal: globalMaxVal });
+          };
+          img.src = imgSrc;
+        });
+      };
+
+      const handleFileChange = (e) => {
+        const file = e.target.files[0];
+        if (file) {
+          setFileName(file.name);
+          setStep(0);
+          setContrast(0);
+          setAnalysisData(null);
+          rawHeatDataRef.current = null;
+          setIsCropping(false);
+          setCropRect({ x: 0, y: 0, w: 1, h: 1 });
+          setEnableROI(false);
+          setRoiRect({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
+          setColdLabelOffset({x:0, y:0});
+          setHotLabelOffset({x:0, y:0});
+          
+          const reader = new FileReader();
+          reader.onload = (event) => {
+            const src = event.target.result;
+            setImportedImageSrc(src); 
+            setOriginalImageSrc(src);
+            setDisplayImage(src);
+            setStep(1);
+            setActiveNode('crop'); 
+          };
+          reader.readAsDataURL(file);
+        }
+        e.target.value = null; 
+      };
+
+      const startCalculation = async () => {
+        if (!originalImageSrc) return;
+        setActiveNode('study');
+        setStep(1.5);
+
+        setColdLabelOffset({x:0, y:0});
+        setHotLabelOffset({x:0, y:0});
+
+        await delay(600);
+        const { grayUrl, minVal, maxVal } = await processImageData(originalImageSrc);
+        
+        setColorLimitMin(minVal); 
+        setColorLimitMax(maxVal); 
+
+        setStep(2);
+        setDisplayImage(grayUrl);
+        await delay(1000);
+
+        setStep(3); 
+        await delay(500); 
+        setStep(4);
+      };
+
+      const getNormalizedHeat = (h_val, range) => {
+        if (range > 0 || range < 0) {
+          return Math.max(0, Math.min(255, ((h_val - colorLimitMin) / range) * 255));
+        }
+        return h_val >= colorLimitMax ? 255 : 0;
+      };
+
+      const hexToRgb = (hex) => {
+        const result = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+        return result ? {
+          r: parseInt(result[1], 16),
+          g: parseInt(result[2], 16),
+          b: parseInt(result[3], 16)
+        } : { r: 0, g: 0, b: 0 };
+      };
+
+      const renderLabelOverlay = (type) => {
+        if (!rawHeatDataRef.current || !analysisData || !imgBounds) return null;
+        
+        const pt = type === 'hot' ? analysisData.hot : analysisData.cold;
+        const offset = type === 'hot' ? hotLabelOffset : coldLabelOffset;
+        
+        const w = rawHeatDataRef.current.width;
+        const h = rawHeatDataRef.current.height;
+        const baseSize = Math.min(Math.max(Math.min(w, h) * 0.04, 12), 40);
+        const size = baseSize * markerIconScale;
+        
+        let textX = pt.x + size * 1.2;
+        let textY = pt.y - size * 1.2;
+        let align = 'left';
+        if (pt.x > w * 0.6) {
+            align = 'right';
+            textX = pt.x - size * 1.2;
+        }
+        if (pt.y < h * 0.1) {
+            textY = pt.y + size * 2.5;
+        }
+        
+        textX += offset.x;
+        textY += offset.y;
+        
+        const scaleX = imgBounds.width / w;
+        const scaleY = imgBounds.height / h;
+        
+        const screenX = imgBounds.left + textX * scaleX;
+        const screenY = imgBounds.top + textY * scaleY;
+        
+        const boxW = 160; 
+        const boxH = 40;
+        
+        const left = align === 'left' ? screenX : screenX - boxW;
+        const top = screenY - boxH / 2;
+
+        return (
+           <div
+             className="absolute cursor-move rounded z-30 transition-colors duration-200 border-2 border-transparent hover:border-blue-400 hover:border-dashed hover:bg-blue-400/10 flex items-center justify-center"
+             style={{ left, top, width: boxW, height: boxH }}
+             onMouseDown={(e) => {
+                e.stopPropagation();
+                e.preventDefault();
+                setDraggingLabel(type);
+                labelDragStartRef.current = { startScreenX: e.clientX, startScreenY: e.clientY, startOffset: {...offset} };
+             }}
+             title={`拖拽移动${type === 'hot' ? '热' : '冷'}点文字标注`}
+           >
+           </div>
+        );
+      };
+
+      const drawCanvas = (ctx, w, h, renderMode) => {
+        if (!rawHeatDataRef.current) return;
+        const { heat, smoothedHeat, alpha, width, height } = rawHeatDataRef.current;
+
+        const newImageData = new ImageData(width, height);
+        const data = newImageData.data;
+
+        const heatRange = colorLimitMax - colorLimitMin;
+        const factor = (259 * (contrast + 255)) / (255 * (259 - contrast));
+        const isoRgb = hexToRgb(isolineColor);
+
+        for (let i = 0; i < heat.length; i++) {
+          const h_val = heat[i];
+          let norm = getNormalizedHeat(h_val, heatRange);
+
+          let isContour = false;
+          
+          if (showIsolines) {
+            const smoothedNorm = getNormalizedHeat(smoothedHeat[i], heatRange);
+            const level = Math.floor((smoothedNorm / 256) * isolineCount);
+            const x = i % width;
+            const y = Math.floor(i / width);
+            
+            if (x < width - 1) {
+              const rightNorm = getNormalizedHeat(smoothedHeat[i + 1], heatRange);
+              const rightLevel = Math.floor((rightNorm / 256) * isolineCount);
+              if (level !== rightLevel) isContour = true;
+            }
+            if (!isContour && y < height - 1) {
+              const bottomNorm = getNormalizedHeat(smoothedHeat[i + width], heatRange);
+              const bottomLevel = Math.floor((bottomNorm / 256) * isolineCount);
+              if (level !== bottomLevel) isContour = true;
+            }
+          }
+
+          let r, g, b;
+
+          if (isContour) {
+            r = isoRgb.r; g = isoRgb.g; b = isoRgb.b;
+          } else {
+            const idx = Math.round(norm) * 3;
+            r = jetColorTable[idx];
+            g = jetColorTable[idx + 1];
+            b = jetColorTable[idx + 2];
+
+            if (contrast !== 0) {
+              r = factor * (r - 128) + 128;
+              g = factor * (g - 128) + 128;
+              b = factor * (b - 128) + 128;
+            }
+          }
+
+          const outIdx = i * 4;
+          data[outIdx] = r;
+          data[outIdx + 1] = g;
+          data[outIdx + 2] = b;
+          data[outIdx + 3] = isContour ? Math.max(alpha[i], 200) : alpha[i];
+        }
+        ctx.putImageData(newImageData, 0, 0);
+
+        const currentShowROI = renderMode === 'export' ? (enableROI && exportShowROI) : enableROI;
+        if (currentShowROI) {
+          ctx.beginPath();
+          ctx.strokeStyle = '#eab308'; 
+          ctx.lineWidth = Math.max(w * 0.003, 2);
+          ctx.setLineDash([Math.max(w * 0.01, 5), Math.max(w * 0.01, 5)]);
+          ctx.rect(roiRect.x * w, roiRect.y * h, roiRect.w * w, roiRect.h * h);
+          ctx.stroke();
+          ctx.setLineDash([]);
+        }
+
+        let cx, cy;
+        switch(originMode) {
+          case 'bottom-left': cx = 0; cy = h; break;
+          case 'top-left': cx = 0; cy = 0; break;
+          case 'bottom-right': cx = w; cy = h; break;
+          case 'top-right': cx = w; cy = 0; break;
+          case 'center': default: cx = w/2; cy = h/2; break;
+        }
+
+        const currentShowAxes = renderMode === 'export' ? exportShowAxes : showAxes;
+
+        if (currentShowAxes) {
+          ctx.lineWidth = Math.max(w * 0.003, 1.5) * axisLineWidth;
+          ctx.strokeStyle = axisColor;
+          if (axisLineStyle === 'dashed') {
+            ctx.setLineDash([Math.max(w * 0.01, 5) * axisLineWidth, Math.max(w * 0.01, 5) * axisLineWidth]);
+          } else {
+            ctx.setLineDash([]);
+          }
+
+          ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(w, cy); ctx.stroke();
+          ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, h); ctx.stroke();
+          ctx.setLineDash([]); 
+
+          const arrowSize = Math.max(w * 0.015, 8) * (1 + (axisLineWidth - 1) * 0.5);
+          ctx.fillStyle = axisColor;
+          
+          ctx.beginPath(); ctx.moveTo(w, cy); ctx.lineTo(w - arrowSize, cy - arrowSize/2); ctx.lineTo(w - arrowSize, cy + arrowSize/2); ctx.fill();
+          ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx - arrowSize/2, arrowSize); ctx.lineTo(cx + arrowSize/2, arrowSize); ctx.fill();
+
+          const fontSize = Math.max(w * 0.018, 12) * axisFontScale;
+          ctx.font = `bold ${fontSize}px ${axisFontFamilyZH}, ${axisFontFamilyEN}, sans-serif`;
+          ctx.fillStyle = axisColor;
+          ctx.strokeStyle = axisColor.toLowerCase() === '#ffffff' ? 'black' : 'white';
+          ctx.lineWidth = Math.max(fontSize / 6, 2);
+          
+          const drawAxisText = (txt, x, y, align='center', base='middle') => { 
+            ctx.textAlign = align;
+            ctx.textBaseline = base;
+            ctx.strokeText(txt, x, y); 
+            ctx.fillText(txt, x, y); 
+          };
+
+          let zx = cx, zy = cy;
+          if (cx === 0) zx += fontSize; else if (cx === w) zx -= fontSize; else zx -= fontSize;
+          if (cy === 0) zy += fontSize; else if (cy === h) zy -= fontSize; else zy += fontSize;
+          drawAxisText('0', zx, zy);
+
+          const pXw = getPhysCoord(w, cy).x;
+          if (Math.abs(parseFloat(pXw)) > 0.01) {
+             let y_offset = cy === 0 ? fontSize : -fontSize;
+             drawAxisText(`${pXw} ${unit}`, w - fontSize*0.5, cy + y_offset, 'right');
+          }
+
+          const pX0 = getPhysCoord(0, cy).x;
+          if (Math.abs(parseFloat(pX0)) > 0.01) {
+             let y_offset = cy === 0 ? fontSize : -fontSize;
+             drawAxisText(`${pX0} ${unit}`, fontSize*0.5, cy + y_offset, 'left');
+          }
+
+          const pY0 = getPhysCoord(cx, 0).y;
+          if (Math.abs(parseFloat(pY0)) > 0.01) {
+             let x_offset = cx === w ? -fontSize*0.5 : fontSize*0.5;
+             drawAxisText(`${pY0} ${unit}`, cx + x_offset, fontSize, cx === w ? 'right' : 'left');
+          }
+
+          const pYh = getPhysCoord(cx, h).y;
+          if (Math.abs(parseFloat(pYh)) > 0.01) {
+             let x_offset = cx === w ? -fontSize*0.5 : fontSize*0.5;
+             drawAxisText(`${pYh} ${unit}`, cx + x_offset, h - fontSize, cx === w ? 'right' : 'left');
+          }
+        }
+
+        if (analysisData) {
+          const drawMarker = (x, y, color, labelType, offset) => {
+            const baseSize = Math.min(Math.max(Math.min(w, h) * 0.04, 12), 40);
+            const size = baseSize * markerIconScale;
+            
+            if (markerIconStyle === 'crosshair-circle' || markerIconStyle === 'circle') {
+              ctx.beginPath(); ctx.arc(x, y, size, 0, 2 * Math.PI); ctx.strokeStyle = 'white'; ctx.lineWidth = Math.max(size / 4, 3); ctx.stroke();
+              ctx.beginPath(); ctx.arc(x, y, size, 0, 2 * Math.PI); ctx.strokeStyle = color; ctx.lineWidth = Math.max(size / 6, 2); ctx.stroke();
+            }
+
+            if (markerIconStyle === 'crosshair-circle' || markerIconStyle === 'crosshair') {
+              const drawCross = (strokeColor, width) => {
+                ctx.beginPath(); ctx.strokeStyle = strokeColor; ctx.lineWidth = width;
+                ctx.moveTo(x - size * 1.6, y); ctx.lineTo(x + size * 1.6, y);
+                ctx.moveTo(x, y - size * 1.6); ctx.lineTo(x, y + size * 1.6); ctx.stroke();
+              };
+              drawCross('white', Math.max(size / 4, 3)); 
+              drawCross(color, Math.max(size / 6, 2));   
+            }
+
+            if (markerIconStyle === 'dot') {
+              ctx.beginPath(); ctx.arc(x, y, size / 2, 0, 2 * Math.PI); ctx.fillStyle = 'white'; ctx.fill();
+              ctx.beginPath(); ctx.arc(x, y, size / 2.5, 0, 2 * Math.PI); ctx.fillStyle = color; ctx.fill();
+            }
+
+            if (markerIconStyle === 'triangle') {
+              const drawTri = (strokeColor, width) => {
+                 ctx.beginPath(); ctx.strokeStyle = strokeColor; ctx.lineWidth = width;
+                 ctx.moveTo(x, y - size); ctx.lineTo(x - size * 0.866, y + size * 0.5); ctx.lineTo(x + size * 0.866, y + size * 0.5); ctx.closePath(); ctx.stroke();
+              };
+              drawTri('white', Math.max(size / 4, 3));
+              drawTri(color, Math.max(size / 6, 2));
+            }
+
+            let textLabel = labelType;
+            const shouldShowCoords = renderMode === 'export' ? exportShowCoords : showCoords;
+            if (shouldShowCoords) {
+               const phys = getPhysCoord(x, y);
+               textLabel = `${labelType} [${phys.x}, ${phys.y}] ${unit}`;
+            }
+
+            const fontSize = Math.max(size * 1.2, 14) * markerFontScale;
+            ctx.font = `bold ${fontSize}px ${markerFontFamilyZH}, ${markerFontFamilyEN}, sans-serif`;
+            ctx.fillStyle = markerTextColor;
+            ctx.strokeStyle = markerTextColor.toLowerCase() === '#ffffff' ? 'black' : 'white';
+            ctx.lineWidth = Math.max(fontSize / 5, 2);
+            
+            let textX = x + size * 1.2;
+            let textY = y - size * 1.2;
+            ctx.textAlign = 'left';
+
+            if (x > w * 0.6) {
+                ctx.textAlign = 'right';
+                textX = x - size * 1.2;
+            }
+            if (y < h * 0.1) {
+                textY = y + size * 2.5;
+            }
+
+            textX += offset.x;
+            textY += offset.y;
+
+            ctx.strokeText(textLabel, textX, textY); 
+            ctx.fillText(textLabel, textX, textY);   
+          };
+
+          const drawHot = renderMode === 'export' ? exportShowHotMarker : showHotMarker;
+          const drawCold = renderMode === 'export' ? exportShowColdMarker : showColdMarker;
+
+          if (drawCold) drawMarker(analysisData.cold.x, analysisData.cold.y, '#00FFFF', coldMarkerText, coldLabelOffset);
+          if (drawHot) drawMarker(analysisData.hot.x, analysisData.hot.y, '#FF0055', hotMarkerText, hotLabelOffset);
+        }
+      };
+
+      useEffect(() => {
+        if (step !== 4 || !rawHeatDataRef.current) return;
+
+        const timer = setTimeout(() => {
+          const canvas = document.createElement('canvas');
+          canvas.width = rawHeatDataRef.current.width;
+          canvas.height = rawHeatDataRef.current.height;
+          const ctx = canvas.getContext('2d');
+          
+          drawCanvas(ctx, canvas.width, canvas.height, 'screen');
+          setDisplayImage(canvas.toDataURL('image/png'));
+        }, 15);
+
+        return () => clearTimeout(timer);
+      }, [colorLimitMin, colorLimitMax, contrast, step, showHotMarker, showColdMarker, showCoords, showAxes, showIsolines, isolineCount, isolineColor, enableROI, roiRect, analysisData, maxX, maxY, unit, originMode, axisFontFamilyEN, axisFontFamilyZH, axisFontScale, axisLineStyle, axisLineWidth, axisColor, markerFontFamilyEN, markerFontFamilyZH, markerFontScale, markerTextColor, markerIconStyle, markerIconScale, coldMarkerText, hotMarkerText, coldLabelOffset, hotLabelOffset]);
+
+      const handleDownloadClick = () => {
+        if (step !== 4 || !rawHeatDataRef.current) return;
+        
+        const canvas = document.createElement('canvas');
+        canvas.width = rawHeatDataRef.current.width;
+        canvas.height = rawHeatDataRef.current.height;
+        const ctx = canvas.getContext('2d');
+        
+        drawCanvas(ctx, canvas.width, canvas.height, 'export');
+        
+        let mimeType = 'image/png';
+        if (exportFormat === 'jpg' || exportFormat === 'jpeg') mimeType = 'image/jpeg';
+        else if (exportFormat === 'webp') mimeType = 'image/webp';
+        else if (exportFormat === 'bmp') mimeType = 'image/bmp';
+
+        const dataUrl = canvas.toDataURL(mimeType, 1.0); 
+        
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        
+        const baseName = fileName ? fileName.replace(/\.[^/.]+$/, "") : 'pseudocolor_result';
+        link.download = `${baseName}_result.${exportFormat}`;
+        
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+      };
+
+      let coldPhys = { x: 0, y: 0 };
+      let hotPhys = { x: 0, y: 0 };
+      if (analysisData) {
+        coldPhys = getPhysCoord(analysisData.cold.x, analysisData.cold.y);
+        hotPhys = getPhysCoord(analysisData.hot.x, analysisData.hot.y);
+      }
+
+      const originTextMap = {
+        'center': '几何中心为原点 (0,0)',
+        'bottom-left': '左下角为原点 (0,0)',
+        'top-left': '左上角为原点 (0,0)',
+        'bottom-right': '右下角为原点 (0,0)',
+        'top-right': '右上角为原点 (0,0)'
+      };
+
+      const isAllExportSelected = exportShowColdMarker && exportShowHotMarker && exportShowCoords && exportShowAxes && exportShowROI;
+      
+      const handleToggleAllExport = (e) => {
+        const checked = e.target.checked;
+        setExportShowColdMarker(checked);
+        setExportShowHotMarker(checked);
+        setExportShowCoords(checked);
+        setExportShowAxes(checked);
+        setExportShowROI(checked);
+      };
+
+      return (
+        <div className="h-screen w-full bg-[#f0f0f0] flex flex-col font-sans overflow-hidden text-gray-800">
+          <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".png,.jpg,.jpeg,.tiff,.tif,.bmp,.webp,.gif" className="hidden" />
+
+          <div className="bg-white border-b border-gray-300 shadow-sm z-10">
+            <div className="flex items-center px-4 py-1.5 border-b border-gray-100 bg-[#f8f9fa]">
+              <span className="text-xs font-semibold text-gray-500 tracking-wider">微波加热模式图片处理</span>
+            </div>
+            <div className="flex items-center px-4 py-2 gap-4 bg-white">
+              <div className="flex flex-col items-center cursor-pointer group px-2" onClick={() => fileInputRef.current.click()}>
+                <div className="bg-blue-50 p-1.5 rounded border border-blue-200 group-hover:bg-blue-100"><ImageIcon size={20} className="text-blue-600" /></div>
+                <span className="text-[10px] mt-1 text-gray-600">导入图像</span>
+              </div>
+              <div className="w-px h-8 bg-gray-300 mx-2"></div>
+              
+              <div className="flex flex-col items-center cursor-pointer group px-2" onClick={() => setActiveNode('crop')}>
+                <div className="p-1.5 rounded border border-transparent group-hover:bg-gray-200"><CropIcon size={20} className="text-gray-700" /></div>
+                <span className="text-[10px] mt-1 text-gray-600">裁剪</span>
+              </div>
+
+              <div className="flex flex-col items-center cursor-pointer group px-2" onClick={() => setActiveNode('calib')}>
+                <div className="p-1.5 rounded border border-transparent group-hover:bg-gray-200"><Ruler size={20} className="text-gray-700" /></div>
+                <span className="text-[10px] mt-1 text-gray-600">标定</span>
+              </div>
+              <div className="flex flex-col items-center cursor-pointer group px-2" onClick={() => setActiveNode('adjust')}>
+                <div className="p-1.5 rounded border border-transparent group-hover:bg-gray-200"><Sliders size={20} className="text-gray-700" /></div>
+                <span className="text-[10px] mt-1 text-gray-600">微调</span>
+              </div>
+              <div className="w-px h-8 bg-gray-300 mx-2"></div>
+              
+              <div className="flex flex-col items-center cursor-pointer group px-2" 
+                   onClick={(!isCropping && (step === 1 || step === 4)) ? startCalculation : null}>
+                <div className={`p-1.5 rounded border ${(!isCropping && (step === 1 || step === 4)) ? 'bg-green-50 border-green-200 group-hover:bg-green-100' : 'bg-gray-100 border-gray-200'}`}>
+                  <Play size={20} className={(!isCropping && (step === 1 || step === 4)) ? "text-green-600" : "text-gray-400"} />
+                </div>
+                <span className="text-[10px] mt-1 text-gray-600">
+                  {step === 0 ? '计算' : (!isCropping && (step === 1 || step === 4)) ? '计算' : '计算中'}
+                </span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-1 overflow-hidden">
+            
+            <div className="w-64 bg-white border-r border-gray-300 flex flex-col flex-shrink-0 shadow-[2px_0_5px_rgba(0,0,0,0.02)] z-10">
+              <div className="bg-[#e5e7eb] px-3 py-1.5 border-b border-gray-300 flex items-center">
+                <span className="text-xs font-bold text-gray-700">模型生成器</span>
+              </div>
+              <div className="flex-1 overflow-y-auto py-2">
+                <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="comp" icon={Settings} label="图像处理" depth={0} hasChildren expanded={treeExpanded.comp} onToggle={() => setTreeExpanded(p => ({...p, comp: !p.comp}))} />
+                {treeExpanded.comp && (
+                  <>
+                    <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="import" icon={ImageIcon} label="图像导入" depth={1} />
+                    <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="crop" icon={CropIcon} label="图像裁剪" depth={1} />
+                    <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="calib" icon={Ruler} label="空间几何标定" depth={1} />
+                  </>
+                )}
+
+                <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="study" icon={Activity} label="计算" depth={0} />
+                
+                <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="results" icon={Layers} label="结果" depth={0} hasChildren expanded={treeExpanded.results} onToggle={() => setTreeExpanded(p => ({...p, results: !p.results}))} />
+                {treeExpanded.results && (
+                  <>
+                    <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="adjust" icon={Sliders} label="图像微调" depth={1} />
+                    <TreeItem activeNode={activeNode} setActiveNode={setActiveNode} id="export" icon={Download} label="极值数据与导出" depth={1} />
+                  </>
+                )}
+              </div>
+            </div>
+
+            <div className="flex-1 flex flex-col bg-[#e1e3e6] relative">
+              <div className="flex items-center bg-[#f0f0f0] border-b border-gray-300 pl-2 pt-1 gap-1">
+                <div className="bg-white px-4 py-1.5 border border-gray-300 border-b-0 rounded-t-sm text-xs font-semibold text-gray-700 flex items-center">
+                  图形 <div className="w-2 h-2 bg-blue-500 rounded-full ml-2"></div>
+                </div>
+              </div>
+              <div className="bg-white border-b border-gray-300 px-2 py-1 flex items-center gap-2">
+                <div className="p-1 hover:bg-gray-100 rounded cursor-pointer"><MousePointer size={16} className="text-gray-600" /></div>
+                <div className="p-1 hover:bg-gray-100 rounded cursor-pointer"><ZoomIn size={16} className="text-gray-600" /></div>
+                <div className="p-1 hover:bg-gray-100 rounded cursor-pointer"><ZoomOut size={16} className="text-gray-600" /></div>
+                <div className="p-1 hover:bg-gray-100 rounded cursor-pointer"><Maximize size={16} className="text-gray-600" /></div>
+              </div>
+
+              <div 
+                className="flex-1 m-2 bg-white border border-gray-300 shadow-sm relative flex items-center justify-center overflow-hidden"
+                ref={imgContainerRef}
+              >
+                {displayImage ? (
+                  <img 
+                    ref={imgRef} 
+                    src={displayImage} 
+                    alt="Graphics Window" 
+                    className={`max-w-full max-h-full object-contain ${(isCropping || (activeNode === 'adjust' && enableROI)) ? 'pointer-events-none select-none' : 'pointer-events-none'}`} 
+                    draggable={false} 
+                  />
+                ) : (
+                  <div className="text-center text-gray-400">
+                    <ImageIcon size={48} className="mx-auto mb-2 opacity-20" />
+                    <p className="text-sm">图形窗口空白</p>
+                    <p className="text-xs mt-1">请在左侧导入图像并进行研究计算</p>
+                  </div>
+                )}
+
+                {activeNode === 'adjust' && imgBounds && (
+                   <>
+                      {showHotMarker && renderLabelOverlay('hot')}
+                      {showColdMarker && renderLabelOverlay('cold')}
+                   </>
+                )}
+
+                {isCropping && activeNode === 'crop' && imgBounds && (
+                  <div 
+                    className="absolute z-10 overflow-hidden" 
+                    style={{
+                      left: imgBounds.left,
+                      top: imgBounds.top,
+                      width: imgBounds.width,
+                      height: imgBounds.height,
+                    }}
+                  >
+                    <div 
+                      className="absolute cursor-move group"
+                      style={{
+                        left: `${cropRect.x * 100}%`,
+                        top: `${cropRect.y * 100}%`,
+                        width: `${cropRect.w * 100}%`,
+                        height: `${cropRect.h * 100}%`,
+                        boxShadow: '0 0 0 9999px rgba(0,0,0,0.5)'
+                      }}
+                      onMouseDown={(e) => startDrag('move', e)}
+                    >
+                      <div className="absolute inset-0 grid grid-cols-3 grid-rows-3 pointer-events-none opacity-50 border border-white border-dashed">
+                        <div className="border-r border-b border-white"></div>
+                        <div className="border-r border-b border-white"></div>
+                        <div className="border-b border-white"></div>
+                        <div className="border-r border-b border-white"></div>
+                        <div className="border-r border-b border-white"></div>
+                        <div className="border-b border-white"></div>
+                        <div className="border-r border-white"></div>
+                        <div className="border-r border-white"></div>
+                        <div></div>
+                      </div>
+
+                      <div className="absolute -left-[5px] -top-[5px] w-5 h-5 cursor-nwse-resize border-t-[4px] border-l-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('nw', e)}></div>
+                      <div className="absolute -right-[5px] -top-[5px] w-5 h-5 cursor-nesw-resize border-t-[4px] border-r-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('ne', e)}></div>
+                      <div className="absolute -left-[5px] -bottom-[5px] w-5 h-5 cursor-nesw-resize border-b-[4px] border-l-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('sw', e)}></div>
+                      <div className="absolute -right-[5px] -bottom-[5px] w-5 h-5 cursor-nwse-resize border-b-[4px] border-r-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('se', e)}></div>
+
+                      <div className="absolute left-1/2 -top-[5px] w-8 h-4 -translate-x-1/2 cursor-ns-resize border-t-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('n', e)}></div>
+                      <div className="absolute left-1/2 -bottom-[5px] w-8 h-4 -translate-x-1/2 cursor-ns-resize border-b-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('s', e)}></div>
+                      <div className="absolute -left-[5px] top-1/2 w-4 h-8 -translate-y-1/2 cursor-ew-resize border-l-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('w', e)}></div>
+                      <div className="absolute -right-[5px] top-1/2 w-4 h-8 -translate-y-1/2 cursor-ew-resize border-r-[4px] border-black bg-transparent" onMouseDown={(e) => startDrag('e', e)}></div>
+                    </div>
+                  </div>
+                )}
+
+                {activeNode === 'adjust' && enableROI && imgBounds && (
+                  <div 
+                    className="absolute z-10 overflow-visible pointer-events-none" 
+                    style={{
+                      left: imgBounds.left,
+                      top: imgBounds.top,
+                      width: imgBounds.width,
+                      height: imgBounds.height,
+                    }}
+                  >
+                    <div 
+                      className="absolute cursor-move group box-border pointer-events-auto"
+                      style={{
+                        left: `${roiRect.x * 100}%`,
+                        top: `${roiRect.y * 100}%`,
+                        width: `${roiRect.w * 100}%`,
+                        height: `${roiRect.h * 100}%`,
+                        border: '2px dashed #eab308', 
+                        backgroundColor: 'rgba(234, 179, 8, 0.05)'
+                      }}
+                      onMouseDown={(e) => startRoiDrag('move', e)}
+                    >
+                      <div className="absolute -left-[6px] -top-[6px] w-3 h-3 rounded-full cursor-nwse-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('nw', e)}></div>
+                      <div className="absolute -right-[6px] -top-[6px] w-3 h-3 rounded-full cursor-nesw-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('ne', e)}></div>
+                      <div className="absolute -left-[6px] -bottom-[6px] w-3 h-3 rounded-full cursor-nesw-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('sw', e)}></div>
+                      <div className="absolute -right-[6px] -bottom-[6px] w-3 h-3 rounded-full cursor-nwse-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('se', e)}></div>
+
+                      <div className="absolute left-1/2 -top-[6px] w-3 h-3 -translate-x-1/2 rounded-full cursor-ns-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('n', e)}></div>
+                      <div className="absolute left-1/2 -bottom-[6px] w-3 h-3 -translate-x-1/2 rounded-full cursor-ns-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('s', e)}></div>
+                      <div className="absolute -left-[6px] top-1/2 w-3 h-3 -translate-y-1/2 rounded-full cursor-ew-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('w', e)}></div>
+                      <div className="absolute -right-[6px] top-1/2 w-3 h-3 -translate-y-1/2 rounded-full cursor-ew-resize bg-yellow-500 border border-white" onMouseDown={(e) => startRoiDrag('e', e)}></div>
+                    </div>
+                  </div>
+                )}
+
+                {(step > 1 && step < 4) && (
+                  <div className="absolute top-4 left-4 bg-white/90 backdrop-blur border border-blue-200 shadow-sm px-3 py-2 rounded text-xs flex items-center z-20">
+                    <Loader size={14} className="animate-spin text-blue-500 mr-2" />
+                    <span className="text-gray-700 font-medium">
+                      {step === 1.5 && "分离并读取像素矩阵..."}
+                      {step === 2 && "抽取标量灰度通道..."}
+                      {step === 3 && "渲染 Jet 伪彩色映射..."}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="w-80 bg-white border-l border-gray-300 flex flex-col flex-shrink-0 z-10">
+              <div className="bg-[#e5e7eb] px-3 py-1.5 border-b border-gray-300 flex items-center">
+                <span className="text-xs font-bold text-gray-700">设置</span>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto">
+                <div className="px-4 py-3 border-b border-gray-200 bg-[#f8f9fa]">
+                  <h2 className="text-lg font-bold text-gray-800">
+                    {activeNode === 'import' && '图像导入'}
+                    {activeNode === 'crop' && '图像裁剪 (预处理)'}
+                    {activeNode === 'calib' && '空间几何标定'}
+                    {activeNode === 'study' && '计算研究'}
+                    {activeNode === 'adjust' && '图像微调'}
+                    {activeNode === 'export' && '极值数据与导出'}
+                    {['comp', 'results'].includes(activeNode) && '节点信息'}
+                  </h2>
+                </div>
+
+                <div className="p-4 space-y-6">
+                  
+                  {activeNode === 'import' && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="text-xs font-semibold text-gray-600 mb-1 block">源文件</label>
+                        <div className="flex items-center gap-2">
+                          <input type="text" readOnly value={fileName || '未选择文件...'} className="flex-1 text-xs border border-gray-300 p-1.5 bg-gray-50 rounded-sm outline-none" />
+                          <button onClick={() => fileInputRef.current.click()} className="px-3 py-1.5 bg-gray-100 border border-gray-300 hover:bg-gray-200 text-xs text-gray-700 rounded-sm">
+                            浏览...
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeNode === 'crop' && (
+                    <div className="space-y-4">
+                      {!originalImageSrc ? (
+                        <p className="text-xs text-gray-500">请先在“图像导入”节点上传图像。</p>
+                      ) : (
+                        <div className="space-y-4">
+                          {!isCropping ? (
+                            <button onClick={() => setIsCropping(true)} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-sm flex justify-center items-center gap-2 transition-colors">
+                              <CropIcon size={16} /> 开启自由裁剪模式
+                            </button>
+                          ) : (
+                            <div className="space-y-2">
+                              <button onClick={applyCrop} className="w-full py-2.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-sm flex justify-center items-center gap-2 transition-colors shadow-sm">
+                                <Scissors size={16} /> 确认并裁剪图形
+                              </button>
+                              <button 
+                                onClick={() => { setIsCropping(false); setCropRect({x:0, y:0, w:1, h:1}); }} 
+                                className="w-full py-1.5 bg-gray-200 hover:bg-gray-300 text-gray-800 text-xs font-medium rounded-sm flex justify-center items-center transition-colors"
+                              >
+                                取消当前框选
+                              </button>
+                            </div>
+                          )}
+
+                          {importedImageSrc && importedImageSrc !== originalImageSrc && (
+                            <div className="pt-4 mt-2 border-t border-gray-200">
+                              <button onClick={resetImage} className="w-full py-2 bg-orange-100 hover:bg-orange-200 border border-orange-200 text-orange-800 text-xs font-semibold rounded-sm flex justify-center items-center gap-2 transition-colors">
+                                <Undo2 size={14} /> 撤销裁剪 (恢复初始原图)
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {activeNode === 'calib' && (
+                    <div className="space-y-4">
+                      <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 mb-4">
+                        <div className="flex items-center gap-2 mb-3 border-b border-gray-200 pb-2">
+                          <Crosshair size={16} className="text-gray-600" />
+                          <span className="text-sm font-semibold text-gray-700">原点系统定位</span>
+                        </div>
+                        <div>
+                          <select
+                            value={originMode}
+                            onChange={(e) => setOriginMode(e.target.value)}
+                            className="w-full bg-white border border-gray-300 rounded-sm px-2 py-1.5 text-xs focus:outline-none focus:border-blue-500"
+                          >
+                            <option value="center">几何中心</option>
+                            <option value="bottom-left">左下角</option>
+                            <option value="top-left">左上角</option>
+                            <option value="bottom-right">右下角</option>
+                            <option value="top-right">右上角</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      <div className="border border-gray-200 rounded-sm p-3 bg-gray-50">
+                        <div className="flex items-center gap-2 mb-3 border-b border-gray-200 pb-2">
+                          <Ruler size={16} className="text-gray-600" />
+                          <span className="text-sm font-semibold text-gray-700">物理尺度设置</span>
+                        </div>
+                        <div className="space-y-3">
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-600 w-20">X轴跨度界限:</label>
+                            <input type="number" value={maxX} onChange={(e) => setMaxX(Math.max(0.1, Number(e.target.value)))} className="w-24 border border-gray-300 p-1 text-xs text-right outline-blue-500" />
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <label className="text-xs text-gray-600 w-20">Y轴跨度界限:</label>
+                            <input type="number" value={maxY} onChange={(e) => setMaxY(Math.max(0.1, Number(e.target.value)))} className="w-24 border border-gray-300 p-1 text-xs text-right outline-blue-500" />
+                          </div>
+                          <div className="flex items-center justify-between pt-1">
+                            <label className="text-xs text-gray-600 w-20">空间单位:</label>
+                            <select value={unit} onChange={(e) => setUnit(e.target.value)} className="w-24 border border-gray-300 p-1 text-xs outline-blue-500 bg-white">
+                              <option value="px">px</option>
+                              <option value="mm">mm</option>
+                              <option value="cm">cm</option>
+                              <option value="m">m</option>
+                              <option value="μm">μm</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+
+                      <label className="flex items-center text-xs text-gray-700 cursor-pointer">
+                        <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} className="mr-2" />
+                        在图形中渲染局部坐标系统
+                      </label>
+                      
+                      {step === 1 && (
+                        <div className="pt-2 border-t border-gray-200">
+                          <button onClick={startCalculation} className="w-full py-1.5 bg-[#2d8745] hover:bg-[#257339] text-white text-xs font-medium rounded-sm flex justify-center items-center gap-2">
+                            <Play size={14} fill="currentColor" /> 执行计算
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {activeNode === 'study' && (
+                    <div className="space-y-4">
+                      <div className="border border-gray-200 rounded-sm p-3">
+                        <span className="text-sm font-semibold text-gray-700 block mb-3">求解器运行状态</span>
+                        <div className="space-y-2">
+                          <div className="flex items-center text-xs text-gray-600">
+                            {step >= 1 ? <CheckCircle size={14} className="text-green-500 mr-2" /> : <div className="w-3 h-3 border border-gray-300 rounded-full mr-2.5 ml-0.5"></div>}
+                            1. 图像载入与数据就绪
+                          </div>
+                          <div className="flex items-center text-xs text-gray-600">
+                            {step > 2 ? <CheckCircle size={14} className="text-green-500 mr-2" /> : (step >= 1.5 && step <= 2) ? <Loader size={14} className="animate-spin text-blue-500 mr-2" /> : <div className="w-3 h-3 border border-gray-300 rounded-full mr-2.5 ml-0.5"></div>}
+                            2. 标量灰度场计算
+                          </div>
+                          <div className="flex items-center text-xs text-gray-600">
+                            {step > 3 ? <CheckCircle size={14} className="text-green-500 mr-2" /> : step === 3 ? <Loader size={14} className="animate-spin text-blue-500 mr-2" /> : <div className="w-3 h-3 border border-gray-300 rounded-full mr-2.5 ml-0.5"></div>}
+                            3. 物理场伪彩色映射 (Jet)
+                          </div>
+                          <div className="flex items-center text-xs text-gray-600">
+                            {step === 4 ? <CheckCircle size={14} className="text-green-500 mr-2" /> : <div className="w-3 h-3 border border-gray-300 rounded-full mr-2.5 ml-0.5"></div>}
+                            4. 极值提取与后处理
+                          </div>
+                        </div>
+                      </div>
+                      
+                      {step === 0 && <p className="text-xs text-gray-500">等待导入图像...</p>}
+                      
+                      {(step === 1 || step === 4) && (
+                        <button onClick={startCalculation} disabled={isCropping} className={`w-full py-2 text-white text-sm font-medium rounded-sm flex justify-center items-center gap-2 ${isCropping ? 'bg-gray-400 cursor-not-allowed' : 'bg-[#2d8745] hover:bg-[#257339]'}`}>
+                          <Play size={16} fill="currentColor" /> {step === 4 ? '重新计算' : '开始计算'}
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {activeNode === 'adjust' && (
+                    <div className="space-y-4">
+                      {step !== 4 ? (
+                        <p className="text-xs text-gray-500">请先运行“研究”以生成结果。</p>
+                      ) : (
+                        <>
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 space-y-3">
+                            <div className="flex items-center border-b border-gray-200 pb-2">
+                              <Palette size={14} className="text-gray-600 mr-1.5" />
+                              <span className="text-xs font-semibold text-gray-700">Colorbar 映射范围控制</span>
+                            </div>
+                            
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-blue-700 font-bold">冷点下限 (蓝色区间 0%):</label>
+                                <input type="number" value={colorLimitMin} onChange={(e) => setColorLimitMin(Number(e.target.value))} className="w-16 border border-gray-300 p-0.5 text-xs text-right outline-blue-500 rounded-sm" />
+                              </div>
+                              <input type="range" min="0" max="255" value={colorLimitMin} onChange={(e) => setColorLimitMin(Number(e.target.value))} className="w-full accent-blue-600" />
+                            </div>
+                            
+                            <div className="mt-2">
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-red-700 font-bold">热点上限 (红色区间 100%):</label>
+                                <input type="number" value={colorLimitMax} onChange={(e) => setColorLimitMax(Number(e.target.value))} className="w-16 border border-gray-300 p-0.5 text-xs text-right outline-red-500 rounded-sm" />
+                              </div>
+                              <input type="range" min="0" max="255" value={colorLimitMax} onChange={(e) => setColorLimitMax(Number(e.target.value))} className="w-full accent-red-600" />
+                            </div>
+                          </div>
+
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50">
+                            <div className="flex justify-between items-center mb-2">
+                              <span className="text-xs font-semibold text-gray-700">对比度偏移量</span>
+                              <span className="text-xs font-mono bg-white border border-gray-200 px-1 rounded">{contrast > 0 ? `+${contrast}` : contrast}</span>
+                            </div>
+                            <input type="range" min="-100" max="100" value={contrast} onChange={(e) => setContrast(parseInt(e.target.value))} className="w-full accent-gray-500" />
+                          </div>
+
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 space-y-2">
+                            <div className="flex items-center border-b border-gray-200 pb-2 mb-2">
+                              <Focus size={14} className="text-yellow-600 mr-1.5" />
+                              <span className="text-xs font-semibold text-gray-700">局部区域极值分析 (ROI)</span>
+                            </div>
+                            <label className="flex items-center text-xs text-gray-700 cursor-pointer font-semibold">
+                              <input type="checkbox" checked={enableROI} onChange={(e) => setEnableROI(e.target.checked)} className="mr-2 accent-yellow-600" />
+                              开启 ROI 框选区域极值搜索
+                            </label>
+                          </div>
+                          
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 space-y-2">
+                            <span className="text-xs font-semibold text-gray-700 block mb-2">渲染图层控制</span>
+                            <label className="flex items-center text-xs text-gray-700 cursor-pointer">
+                              <input type="checkbox" checked={showHotMarker} onChange={(e) => setShowHotMarker(e.target.checked)} className="mr-2" />
+                              显示热点跟踪器 (MAX)
+                            </label>
+                            <label className="flex items-center text-xs text-gray-700 cursor-pointer">
+                              <input type="checkbox" checked={showColdMarker} onChange={(e) => setShowColdMarker(e.target.checked)} className="mr-2" />
+                              显示冷点跟踪器 (MIN)
+                            </label>
+                            <label className="flex items-center text-xs text-gray-700 cursor-pointer">
+                              <input type="checkbox" checked={showCoords} onChange={(e) => setShowCoords(e.target.checked)} className="mr-2" />
+                              显示极值冷热坐标
+                            </label>
+                            <label className="flex items-center text-xs text-gray-700 cursor-pointer">
+                              <input type="checkbox" checked={showAxes} onChange={(e) => setShowAxes(e.target.checked)} className="mr-2" />
+                              显示局部坐标系统
+                            </label>
+                            
+                            <div className="pt-2 mt-2 border-t border-gray-200">
+                              <label className="flex items-center text-xs text-gray-700 cursor-pointer font-semibold">
+                                <input type="checkbox" checked={showIsolines} onChange={(e) => setShowIsolines(e.target.checked)} className="mr-2 accent-gray-700" />
+                                开启平滑等温线 (Isotherms)
+                              </label>
+                              {showIsolines && (
+                                <div className="pl-6 mt-2 space-y-2">
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs text-gray-500">等温线颜色:</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-[10px] font-mono text-gray-500 uppercase">{isolineColor}</span>
+                                      <input type="color" value={isolineColor} onChange={e=>setIsolineColor(e.target.value)} className="w-6 h-6 border border-gray-300 p-0 cursor-pointer rounded-sm bg-white" />
+                                    </div>
+                                  </div>
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-xs text-gray-500">等温线密度:</span>
+                                    <div className="flex items-center gap-2">
+                                      <span className="text-xs font-mono w-4 text-right">{isolineCount}</span>
+                                      <input type="range" min="2" max="20" value={isolineCount} onChange={e=>setIsolineCount(parseInt(e.target.value))} className="w-20 accent-gray-500" />
+                                    </div>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+
+                          </div>
+
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 space-y-3">
+                            <div className="flex items-center border-b border-gray-200 pb-2">
+                              <Target size={14} className="text-gray-600 mr-1.5" />
+                              <span className="text-xs font-semibold text-gray-700">极值标注样式</span>
+                            </div>
+                            
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">标记图案</label>
+                              <select value={markerIconStyle} onChange={e=>setMarkerIconStyle(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm">
+                                <option value="crosshair-circle">准星圆圈</option>
+                                <option value="crosshair">仅准星</option>
+                                <option value="circle">仅圆圈</option>
+                                <option value="dot">实心圆点</option>
+                                <option value="triangle">空心三角</option>
+                              </select>
+                            </div>
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-gray-600">图案缩放比例</label>
+                                <span className="text-xs font-mono bg-white border border-gray-200 px-1 rounded">{markerIconScale.toFixed(1)}x</span>
+                              </div>
+                              <input type="range" min="0.5" max="3.0" step="0.1" value={markerIconScale} onChange={e=>setMarkerIconScale(parseFloat(e.target.value))} className="w-full accent-blue-600" />
+                            </div>
+
+                            <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                              <label className="text-xs text-gray-600 text-blue-700">冷点文本</label>
+                              <input type="text" value={coldMarkerText} onChange={e=>setColdMarkerText(e.target.value)} placeholder="如: MIN" className="w-24 text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm text-right" />
+                            </div>
+                            <div className="flex justify-between items-center mb-2">
+                              <label className="text-xs text-gray-600 text-red-700">热点文本</label>
+                              <input type="text" value={hotMarkerText} onChange={e=>setHotMarkerText(e.target.value)} placeholder="如: MAX" className="w-24 text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm text-right" />
+                            </div>
+                            
+                            <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                              <label className="text-xs text-gray-600">中文字体 (汉字)</label>
+                              <select value={markerFontFamilyZH} onChange={e=>setMarkerFontFamilyZH(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm w-32">
+                                <option value="'SimSun', serif">宋体 (SimSun)</option>
+                                <option value="'SimHei', sans-serif">黑体 (SimHei)</option>
+                                <option value="'KaiTi', serif">楷体 (KaiTi)</option>
+                                <option value="'Microsoft YaHei', sans-serif">微软雅黑 (YaHei)</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">西文字体 (数字/字母)</label>
+                              <select value={markerFontFamilyEN} onChange={e=>setMarkerFontFamilyEN(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm w-32">
+                                <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                                <option value="Arial, sans-serif">Arial</option>
+                                <option value="Helvetica, sans-serif">Helvetica</option>
+                                <option value="Roboto, sans-serif">Roboto</option>
+                              </select>
+                            </div>
+
+                            <div className="flex justify-between items-center mt-2">
+                              <label className="text-xs text-gray-600">文本颜色</label>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-mono text-gray-500 uppercase">{markerTextColor}</span>
+                                <input type="color" value={markerTextColor} onChange={e=>setMarkerTextColor(e.target.value)} className="w-6 h-6 border border-gray-300 p-0 cursor-pointer rounded-sm bg-white" />
+                              </div>
+                            </div>
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-gray-600">字号缩放</label>
+                                <span className="text-xs font-mono bg-white border border-gray-200 px-1 rounded">{markerFontScale.toFixed(1)}x</span>
+                              </div>
+                              <input type="range" min="0.5" max="2.5" step="0.1" value={markerFontScale} onChange={e=>setMarkerFontScale(parseFloat(e.target.value))} className="w-full accent-blue-600" />
+                            </div>
+                            
+                            <div className="flex justify-between items-center pt-2 border-t border-gray-200">
+                               <span className="text-xs text-gray-600 font-semibold">自定义标注位置</span>
+                               <button 
+                                 onClick={() => { setHotLabelOffset({x:0,y:0}); setColdLabelOffset({x:0,y:0}); }}
+                                 className="px-2 py-1 bg-gray-200 hover:bg-gray-300 rounded text-xs text-gray-700 transition-colors"
+                               >
+                                 恢复默认位置
+                               </button>
+                            </div>
+                          </div>
+
+                          <div className="border border-gray-200 rounded-sm p-3 bg-gray-50 space-y-3">
+                            <div className="flex items-center border-b border-gray-200 pb-2">
+                              <Palette size={14} className="text-gray-600 mr-1.5" />
+                              <span className="text-xs font-semibold text-gray-700">坐标轴样式</span>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">中文字体 (汉字)</label>
+                              <select value={axisFontFamilyZH} onChange={e=>setAxisFontFamilyZH(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm w-32">
+                                <option value="'SimSun', serif">宋体 (SimSun)</option>
+                                <option value="'SimHei', sans-serif">黑体 (SimHei)</option>
+                                <option value="'KaiTi', serif">楷体 (KaiTi)</option>
+                                <option value="'Microsoft YaHei', sans-serif">微软雅黑 (YaHei)</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">西文字体 (数字/字母)</label>
+                              <select value={axisFontFamilyEN} onChange={e=>setAxisFontFamilyEN(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm w-32">
+                                <option value="'Times New Roman', Times, serif">Times New Roman</option>
+                                <option value="Arial, sans-serif">Arial</option>
+                                <option value="Helvetica, sans-serif">Helvetica</option>
+                                <option value="Roboto, sans-serif">Roboto</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">线条类型</label>
+                              <select value={axisLineStyle} onChange={e=>setAxisLineStyle(e.target.value)} className="text-xs border border-gray-300 p-1 outline-blue-500 rounded-sm">
+                                <option value="dashed">虚线 (Dashed)</option>
+                                <option value="solid">实线 (Solid)</option>
+                              </select>
+                            </div>
+                            <div className="flex justify-between items-center">
+                              <label className="text-xs text-gray-600">轴与文本颜色</label>
+                              <div className="flex items-center gap-2">
+                                <span className="text-[10px] font-mono text-gray-500 uppercase">{axisColor}</span>
+                                <input type="color" value={axisColor} onChange={e=>setAxisColor(e.target.value)} className="w-6 h-6 border border-gray-300 p-0 cursor-pointer rounded-sm bg-white" />
+                              </div>
+                            </div>
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-gray-600">线条粗细</label>
+                                <span className="text-xs font-mono bg-white border border-gray-200 px-1 rounded">{axisLineWidth.toFixed(1)}x</span>
+                              </div>
+                              <input type="range" min="0.5" max="3.0" step="0.1" value={axisLineWidth} onChange={e=>setAxisLineWidth(parseFloat(e.target.value))} className="w-full accent-blue-600" />
+                            </div>
+                            <div>
+                              <div className="flex justify-between items-center mb-1">
+                                <label className="text-xs text-gray-600">字号缩放</label>
+                                <span className="text-xs font-mono bg-white border border-gray-200 px-1 rounded">{axisFontScale.toFixed(1)}x</span>
+                              </div>
+                              <input type="range" min="0.5" max="2.5" step="0.1" value={axisFontScale} onChange={e=>setAxisFontScale(parseFloat(e.target.value))} className="w-full accent-blue-600" />
+                            </div>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  {activeNode === 'export' && (
+                    <div className="space-y-4">
+                      {step !== 4 || !analysisData ? (
+                        <p className="text-xs text-gray-500">计算未完成，无数据可导出。</p>
+                      ) : (
+                        <>
+                          <div className="border border-gray-300 rounded-sm overflow-hidden text-xs">
+                            <div className="bg-[#e5e7eb] px-2 py-1 font-semibold text-gray-700 border-b border-gray-300">
+                              派生值 (Derived Values)
+                            </div>
+                            <div className="p-2 space-y-2 bg-white">
+                              <div className="flex justify-between items-start pb-2 border-b border-gray-100">
+                                <span className="flex items-center text-blue-700 whitespace-nowrap"><Snowflake size={14} className="mr-1" /> 局部极小值 (冷点)</span>
+                                <div className="text-right">
+                                  <div className="font-mono text-[11px] text-gray-800">[{coldPhys.x}, {coldPhys.y}] {unit}</div>
+                                  <div className="text-[9px] text-gray-500">{originTextMap[originMode]}</div>
+                                </div>
+                              </div>
+                              <div className="flex justify-between items-start pt-1">
+                                <span className="flex items-center text-red-700 whitespace-nowrap"><Flame size={14} className="mr-1" /> 局部极大值 (热点)</span>
+                                <div className="text-right">
+                                  <div className="font-mono text-[11px] text-gray-800">[{hotPhys.x}, {hotPhys.y}] {unit}</div>
+                                  <div className="text-[9px] text-gray-500">{originTextMap[originMode]}</div>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="border border-gray-300 rounded-sm overflow-hidden text-xs mt-4">
+                            <div className="bg-[#e5e7eb] px-2 py-1 font-semibold text-gray-700 border-b border-gray-300 flex justify-between items-center">
+                              <span>导出图层设定</span>
+                              <label className="flex items-center text-blue-700 cursor-pointer hover:text-blue-800 font-normal">
+                                <input type="checkbox" checked={isAllExportSelected} onChange={handleToggleAllExport} className="mr-1 accent-blue-600" />
+                                一键全选
+                              </label>
+                            </div>
+                            <div className="p-2 space-y-2 bg-white">
+                              <label className="flex items-center text-gray-700 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                                <input type="checkbox" checked={exportShowColdMarker} onChange={(e) => setExportShowColdMarker(e.target.checked)} className="mr-2 accent-blue-600" />
+                                显示冷点标记 (MIN)
+                              </label>
+                              <label className="flex items-center text-gray-700 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                                <input type="checkbox" checked={exportShowHotMarker} onChange={(e) => setExportShowHotMarker(e.target.checked)} className="mr-2 accent-blue-600" />
+                                显示热点标记 (MAX)
+                              </label>
+                              <label className="flex items-center text-gray-700 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                                <input type="checkbox" checked={exportShowCoords} onChange={(e) => setExportShowCoords(e.target.checked)} className="mr-2 accent-blue-600" />
+                                显示极值坐标
+                              </label>
+                              <label className="flex items-center text-gray-700 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                                <input type="checkbox" checked={exportShowAxes} onChange={(e) => setExportShowAxes(e.target.checked)} className="mr-2 accent-blue-600" />
+                                显示坐标轴
+                              </label>
+                              <label className="flex items-center text-gray-700 cursor-pointer hover:bg-gray-50 p-1 rounded">
+                                <input type="checkbox" checked={exportShowROI} onChange={(e) => setExportShowROI(e.target.checked)} disabled={!enableROI} className="mr-2 accent-blue-600 disabled:opacity-40" />
+                                <span className={!enableROI ? "text-gray-400" : ""}>显示局部区域框 (ROI) {!enableROI && "(需先开启ROI分析)"}</span>
+                              </label>
+                            </div>
+                          </div>
+
+                          <div className="border border-gray-300 rounded-sm overflow-hidden text-xs mt-4">
+                            <div className="bg-[#e5e7eb] px-2 py-1 font-semibold text-gray-700 border-b border-gray-300">
+                              导出格式 (Export Format)
+                            </div>
+                            <div className="p-2 space-y-2 bg-white">
+                              <select value={exportFormat} onChange={e=>setExportFormat(e.target.value)} className="w-full border border-gray-300 p-1.5 outline-blue-500 rounded-sm text-xs">
+                                <option value="png">PNG 图像 (*.png) - 推荐，极清无损</option>
+                                <option value="jpg">JPEG 图像 (*.jpg) - 适合嵌入文档</option>
+                                <option value="jpeg">JPEG 图像 (*.jpeg)</option>
+                                <option value="webp">WebP 图像 (*.webp) - 网页优化格式</option>
+                                <option value="bmp">BMP 位图 (*.bmp) - 原始无压缩像素</option>
+                              </select>
+                            </div>
+                          </div>
+
+                          <button onClick={handleDownloadClick} className="w-full py-2 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-800 text-sm font-bold rounded-sm flex justify-center items-center gap-2 mt-4 transition-colors">
+                            <Save size={16} /> 导出结果图像
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  )}
+                  
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // 挂载 React 应用
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
